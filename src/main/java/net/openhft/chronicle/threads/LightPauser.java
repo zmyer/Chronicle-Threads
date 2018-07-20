@@ -18,6 +18,7 @@
 
 package net.openhft.chronicle.threads;
 
+import net.openhft.chronicle.core.Jvm;
 import net.openhft.chronicle.core.annotation.ForceInline;
 import net.openhft.chronicle.core.util.Time;
 
@@ -26,7 +27,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 
-/**
+/*
  * Created by peter.lawrey on 11/12/14.
  * @deprecated use LongPauser instead.
  */
@@ -57,8 +58,10 @@ public class LightPauser implements Pauser {
     public void pause() {
         long maxPauseNS = parkPeriodNS;
         if (busyPeriodNS > 0) {
-            if (count++ < 1000)
+            if (count++ < 1000) {
+                Jvm.safepoint();
                 return;
+            }
             if (pauseStart == 0) {
                 pauseStart = System.nanoTime();
                 return;

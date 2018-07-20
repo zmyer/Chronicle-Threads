@@ -18,20 +18,51 @@ package net.openhft.chronicle.threads;
 
 import net.openhft.chronicle.core.Jvm;
 import net.openhft.chronicle.core.annotation.ForceInline;
+import net.openhft.chronicle.core.util.ObjectUtils;
 import net.openhft.chronicle.core.util.ThrowingCallable;
 import org.jetbrains.annotations.NotNull;
 
+import java.lang.Thread.State;
 import java.lang.reflect.Field;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-/**
- * Created by peter on 24/06/15.
+/*
+ * Created by Peter Lawrey on 24/06/15.
  */
 public enum Threads {
     ;
 
     static final Field GROUP = Jvm.getField(Thread.class, "group");
+
+    static ExecutorFactory executorFactory;
+
+    static {
+        ExecutorFactory instance = VanillaExecutorFactory.INSTANCE;
+        try {
+            String property = System.getProperty("threads.executor.factory");
+            if (property != null)
+                instance = (ExecutorFactory) ObjectUtils.newInstance(Class.forName(property));
+        } catch (Exception e) {
+            Jvm.warn().on(Threads.class, e);
+        }
+        executorFactory = instance;
+    }
+
+    public static ExecutorService acquireExecutorService(String name, int threads, boolean daemon) {
+        return executorFactory.acquireExecutorService(name, threads, daemon);
+    }
+
+    public static ScheduledExecutorService acquireScheduledExecutorService(String name, boolean daemon) {
+        return executorFactory.acquireScheduledExecutorService(name, daemon);
+    }
+
+    public static void executorFactory(ExecutorFactory executorFactory) {
+        Threads.executorFactory = executorFactory;
+    }
 
     @ForceInline
     public static <R, T extends Throwable> R withThreadGroup(ThreadGroup tg, @NotNull ThrowingCallable<R, T> callable) throws T {
@@ -64,17 +95,79 @@ public enum Threads {
         return threadGroupName;
     }
 
-    static void shutdown(ExecutorService service) {
-        service.shutdown();
-
+    public static void shutdownDaemon(@NotNull ExecutorService service) {
+        service.shutdownNow();
         try {
-            service.awaitTermination(500, TimeUnit.MILLISECONDS);
+            boolean terminated = service.awaitTermination(10, TimeUnit.MILLISECONDS);
+            if (!terminated) {
+                terminated = service.awaitTermination(1, TimeUnit.SECONDS);
+                if (!terminated) {
+                    if (service instanceof ThreadPoolExecutor)
+                        warnRunningThreads(service);
+                    else
+                        Jvm.warn().on(Threads.class, "*** FAILED TO TERMINATE " + service.toString());
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    public static void shutdown(@NotNull ExecutorService service, boolean daemon) {
+        if (daemon)
+            shutdownDaemon(service);
+        else
+            shutdown(service);
+    }
+
+    public static void shutdown(@NotNull ExecutorService service) {
+        service.shutdown();
+        try {
+
+            if (!service.awaitTermination(1, TimeUnit.SECONDS)) {
+                service.shutdownNow();
+
+                try {
+                    if (!service.awaitTermination(20, TimeUnit.SECONDS)) {
+                        if (service instanceof ThreadPoolExecutor)
+                            warnRunningThreads(service);
+                        else
+                            service.shutdownNow();
+                    }
+
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
 
-        } finally {
-            service.shutdownNow();
+    private static void warnRunningThreads(@NotNull ExecutorService service) {
+        try {
+            Field workers = ThreadPoolExecutor.class.getDeclaredField("workers");
+            workers.setAccessible(true);
+            Set objects = (Set) workers.get(service);
+            for (Object o : objects) {
+                Field thread = o.getClass().getDeclaredField("thread");
+                thread.setAccessible(true);
+                Thread t = (Thread) thread.get(o);
+                if (t.getState() != State.TERMINATED) {
+
+                    StringBuilder b = new StringBuilder("**** THE " +
+                            "FOLLOWING " +
+                            "THREAD DID NOT SHUTDOWN ***\n");
+                    for (StackTraceElement s : t.getStackTrace()) {
+                        b.append("  ").append(s).append("\n");
+                    }
+                    Jvm.warn().on(Threads.class, b.toString());
+                }
+            }
+
+        } catch (Exception e) {
+            Jvm.warn().on(Threads.class, e);
         }
     }
 }

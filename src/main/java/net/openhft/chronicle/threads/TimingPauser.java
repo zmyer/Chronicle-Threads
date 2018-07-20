@@ -18,37 +18,19 @@
 
 package net.openhft.chronicle.threads;
 
-import net.openhft.chronicle.core.Jvm;
-import net.openhft.chronicle.core.threads.ThreadHints;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
-/*
- * Created by peter.lawrey on 11/12/14.
+/**
+ * Marker interface to show we support pause(long timeout, TimeUnit timeUnit)
  */
-public enum BusyPauser implements Pauser {
-    INSTANCE;
+public interface TimingPauser extends Pauser {
 
-    @Override
-    public void reset() {
-    }
-
-    @Override
-    public void pause() {
-        Jvm.optionalSafepoint();
-        ThreadHints.onSpinWait();
-    }
-
-    @Override
-    public void unpause() {
-        // nothing to unpause.
-    }
-
-    @Override
-    public long timePaused() {
-        return 0;
-    }
-
-    @Override
-    public long countPaused() {
-        return 0;
-    }
+    /**
+     * Pauses but keep tracks of accumulated pause time and throws if timeout exceeded
+     * @param timeout timeout
+     * @param timeUnit unit
+     * @throws TimeoutException thrown if timeout passes
+     */
+    void pause(long timeout, TimeUnit timeUnit) throws TimeoutException;
 }

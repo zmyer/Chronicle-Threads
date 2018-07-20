@@ -18,15 +18,20 @@
 
 package net.openhft.chronicle.threads;
 
+import net.openhft.chronicle.core.Jvm;
+import net.openhft.chronicle.core.threads.ThreadHints;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.LockSupport;
 
-/**
+/*
  * Created by rob on 30/11/2015.
  */
-public class LongPauser implements Pauser {
+public class LongPauser implements Pauser, TimingPauser {
     private static final String SHOW_PAUSES = System.getProperty("pauses.show");
     private final long minPauseTimeNS;
     private final long maxPauseTimeNS;
@@ -36,6 +41,7 @@ public class LongPauser implements Pauser {
     private long pauseTimeNS;
     private long timePaused = 0;
     private long countPaused = 0;
+    @Nullable
     private volatile Thread thread = null;
     private long yieldStart = 0;
     private long timeOutStart = Long.MAX_VALUE;
@@ -51,7 +57,7 @@ public class LongPauser implements Pauser {
      * @param maxTime  the amount of time subsequently to sleep
      * @param timeUnit the unit of the {@code minTime}  and {@code maxTime}
      */
-    public LongPauser(int minBusy, int minCount, long minTime, long maxTime, TimeUnit timeUnit) {
+    public LongPauser(int minBusy, int minCount, long minTime, long maxTime, @NotNull TimeUnit timeUnit) {
         this.minBusy = minBusy;
         this.minCount = minCount;
         this.minPauseTimeNS = timeUnit.toNanos(minTime);
@@ -70,24 +76,33 @@ public class LongPauser implements Pauser {
     @Override
     public void pause() {
         ++count;
-        if (count < minBusy)
+        if (count < minBusy) {
+            Jvm.safepoint();
+            ThreadHints.onSpinWait();
             return;
+        }
+
+        checkYieldTime();
         if (count <= minBusy + minCount) {
             yield();
             return;
         }
         if (SHOW_PAUSES != null) {
-            String name = Thread.currentThread().getName();
-            if (name.startsWith(SHOW_PAUSES))
-                System.out.println(name + " p" + pauseTimeNS / 1000);
+            showPauses();
         }
-        checkYieldTime();
+
         doPause(pauseTimeNS);
         pauseTimeNS = Math.min(maxPauseTimeNS, pauseTimeNS + (pauseTimeNS >> 6) + 20_000);
     }
 
+    private void showPauses() {
+        String name = Thread.currentThread().getName();
+        if (name.startsWith(SHOW_PAUSES))
+            System.out.println(name + " p" + pauseTimeNS / 1000);
+    }
+
     @Override
-    public void pause(long timeout, TimeUnit timeUnit) throws TimeoutException {
+    public void pause(long timeout, @NotNull TimeUnit timeUnit) throws TimeoutException {
         ++count;
         if (count < minBusy)
             return;

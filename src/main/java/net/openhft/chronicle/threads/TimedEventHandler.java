@@ -19,9 +19,10 @@ package net.openhft.chronicle.threads;
 import net.openhft.chronicle.core.threads.EventHandler;
 import net.openhft.chronicle.core.threads.HandlerPriority;
 import net.openhft.chronicle.core.threads.InvalidEventHandlerException;
+import org.jetbrains.annotations.NotNull;
 
-/**
- * Created by peter on 03/03/2016.
+/*
+ * Created by Peter Lawrey on 03/03/2016.
  */
 public abstract class TimedEventHandler implements EventHandler {
     private long nextRunNS = 0;
@@ -43,8 +44,9 @@ public abstract class TimedEventHandler implements EventHandler {
      *
      * @return the delay in micro-seconds.
      */
-    protected abstract long timedAction();
+    protected abstract long timedAction() throws InvalidEventHandlerException, InterruptedException;
 
+    @NotNull
     @Override
     public HandlerPriority priority() {
         return HandlerPriority.TIMER;

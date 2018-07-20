@@ -30,20 +30,26 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-/**
+/*
  * Created by peter.lawrey on 22/01/15.
  */
 public class MonitorEventLoop implements EventLoop, Runnable, Closeable {
-    static int MONITOR_INITIAL_DELAY = Integer.getInteger("MonitorInitialDelay", 60_000);
-    final ExecutorService service = Executors.newSingleThreadExecutor(new NamedThreadFactory("event-loop-monitor", true));
+    public static final String MONITOR_INITIAL_DELAY = "MonitorInitialDelay";
+    static int MONITOR_INITIAL_DELAY_MS = Integer.getInteger(MONITOR_INITIAL_DELAY, 60_000);
+    final ExecutorService service;
     private final EventLoop parent;
     private final List<EventHandler> handlers = new ArrayList<>();
     private final Pauser pauser;
     private volatile boolean running = true;
 
     public MonitorEventLoop(EventLoop parent, Pauser pauser) {
+        this(parent, "", pauser);
+    }
+
+    public MonitorEventLoop(EventLoop parent, String name, Pauser pauser) {
         this.parent = parent;
         this.pauser = pauser;
+        service = Executors.newSingleThreadExecutor(new NamedThreadFactory(name + "event-loop-monitor", true));
     }
 
     @Override
@@ -55,6 +61,7 @@ public class MonitorEventLoop implements EventLoop, Runnable, Closeable {
         }
     }
 
+    @Override
     public void start() {
         running = true;
         service.submit(this);
@@ -65,6 +72,7 @@ public class MonitorEventLoop implements EventLoop, Runnable, Closeable {
         pauser.unpause();
     }
 
+    @Override
     public void stop() {
         running = false;
     }
@@ -84,6 +92,7 @@ public class MonitorEventLoop implements EventLoop, Runnable, Closeable {
         addHandler(handler);
     }
 
+    @Override
     public void addHandler(@NotNull EventHandler handler) {
         synchronized (handlers) {
             if (!handlers.contains(handler))
@@ -97,10 +106,10 @@ public class MonitorEventLoop implements EventLoop, Runnable, Closeable {
     public void run() {
         try {
             // don't do any monitoring for the first 60000 ms.
-            for (int i = 0; i < MONITOR_INITIAL_DELAY; i += 50)
+            for (int i = 0; i < MONITOR_INITIAL_DELAY_MS; i += 50)
                 if (running)
                     Jvm.pause(50);
-            while (running) {
+            while (running && !Thread.currentThread().isInterrupted()) {
                 boolean busy;
                 synchronized (handlers) {
                     busy = runHandlers();
@@ -113,6 +122,7 @@ public class MonitorEventLoop implements EventLoop, Runnable, Closeable {
         } catch (Throwable e) {
             Jvm.warn().on(getClass(), e);
         }
+
     }
 
     @HotMethod
@@ -130,7 +140,7 @@ public class MonitorEventLoop implements EventLoop, Runnable, Closeable {
                 handlers.remove(i--);
 
             } catch (Exception e) {
-                Jvm.warn().on(getClass(), e);
+                Jvm.warn().on(getClass(), "Loop terminated due to exception", e);
             }
         }
         return busy;
@@ -139,6 +149,6 @@ public class MonitorEventLoop implements EventLoop, Runnable, Closeable {
     @Override
     public void close() {
         stop();
-        Threads.shutdown(service);
+        Threads.shutdownDaemon(service);
     }
 }

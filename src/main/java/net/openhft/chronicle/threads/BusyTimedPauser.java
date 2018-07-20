@@ -21,20 +21,31 @@ package net.openhft.chronicle.threads;
 import net.openhft.chronicle.core.Jvm;
 import net.openhft.chronicle.core.threads.ThreadHints;
 
-/*
- * Created by peter.lawrey on 11/12/14.
- */
-public enum BusyPauser implements Pauser {
-    INSTANCE;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+public class BusyTimedPauser implements Pauser, TimingPauser {
+
+    private long time = Long.MAX_VALUE;
 
     @Override
     public void reset() {
+        time = Long.MAX_VALUE;
     }
 
     @Override
     public void pause() {
+        // busy wait.
         Jvm.optionalSafepoint();
         ThreadHints.onSpinWait();
+    }
+
+    @Override
+    public void pause(long timeout, TimeUnit timeUnit) throws TimeoutException {
+        if (time == Long.MAX_VALUE)
+            time = System.nanoTime();
+        if (time + timeUnit.toNanos(timeout) < System.nanoTime())
+            throw new TimeoutException();
     }
 
     @Override

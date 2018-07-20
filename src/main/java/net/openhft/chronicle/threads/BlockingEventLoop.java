@@ -21,10 +21,10 @@ import net.openhft.chronicle.core.threads.EventHandler;
 import net.openhft.chronicle.core.threads.EventLoop;
 import net.openhft.chronicle.core.threads.InvalidEventHandlerException;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.channels.AsynchronousCloseException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -33,23 +33,29 @@ import java.util.concurrent.TimeUnit;
 import static net.openhft.chronicle.core.io.Closeable.closeQuietly;
 
 /**
- * Event "Loop" for blocking tasks. Created by peter.lawrey on 26/01/15.
+ * Event Loop for blocking tasks.
+ *
+ * @author Peter Lawrey
  */
 public class BlockingEventLoop implements EventLoop {
 
     private static final Logger LOG = LoggerFactory.getLogger(BlockingEventLoop.class);
 
+    @NotNull
     private final EventLoop parent;
     @NotNull
     private final ExecutorService service;
-    @Nullable
-    private Thread thread = null;
     private volatile boolean closed;
     private EventHandler handler;
 
     public BlockingEventLoop(@NotNull EventLoop parent,
                              @NotNull String name) {
         this.parent = parent;
+        this.service = Executors.newCachedThreadPool(new NamedThreadFactory(name, true));
+    }
+
+    public BlockingEventLoop(@NotNull String name) {
+        this.parent = this;
         this.service = Executors.newCachedThreadPool(new NamedThreadFactory(name, true));
     }
 
@@ -72,7 +78,6 @@ public class BlockingEventLoop implements EventLoop {
         this.handler = handler;
         try {
             service.submit(() -> {
-                thread = Thread.currentThread();
                 handler.eventLoop(parent);
                 try {
                     while (!closed)
@@ -82,7 +87,8 @@ public class BlockingEventLoop implements EventLoop {
                     Jvm.debug().on(getClass(), e);
 
                 } catch (Throwable t) {
-                    Jvm.warn().on(getClass(), t);
+                    if (!closed)
+                        Jvm.warn().on(getClass(), t);
 
                 } finally {
                     if (LOG.isDebugEnabled())

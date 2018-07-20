@@ -27,8 +27,9 @@ import org.jetbrains.annotations.NotNull;
 import java.util.function.Supplier;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static net.openhft.chronicle.threads.VanillaEventLoop.NO_CPU;
 
-/**
+/*
  * Created by peter.lawrey on 22/01/15.
  */
 public class EventGroup implements EventLoop {
@@ -42,27 +43,42 @@ public class EventGroup implements EventLoop {
 
     private static final Integer REPLICATION_EVENT_PAUSE_TIME = Integer.getInteger
             ("replicationEventPauseTime", 20);
+    @NotNull
     final EventLoop monitor;
     @NotNull
     final VanillaEventLoop core;
+    @NotNull
     final BlockingEventLoop blocking;
     @NotNull
     private final Pauser pauser;
     private final boolean binding;
+    private final int bindingCpuReplication;
     private final String name;
-    private VanillaEventLoop _replication;
+    private VanillaEventLoop replication;
+    @NotNull
     private VanillaEventLoop[] concThreads = new VanillaEventLoop[CONC_THREADS];
     private Supplier<Pauser> concThreadPauserSupplier = () -> Pauser.balancedUpToMillis(REPLICATION_EVENT_PAUSE_TIME);
     private boolean daemon;
 
-    public EventGroup(boolean daemon, Pauser pauser, boolean binding, String name) {
+    /**
+     * Create an EventGroup
+     *
+     * @param daemon                whether to create threads as daemon
+     * @param pauser                pauser to use
+     * @param binding               whether to bind core event loop to current core
+     * @param bindingCpuCore        CPU to bind core event loop to. Supersedes binding above
+     * @param bindingCpuReplication CPU to bind replication event loop to. -1 means no binding
+     * @param name                  name of event group. Any created threads are named after this
+     */
+    public EventGroup(boolean daemon, @NotNull Pauser pauser, boolean binding, int bindingCpuCore, int bindingCpuReplication, String name) {
         this.daemon = daemon;
         this.pauser = pauser;
         this.binding = binding;
+        this.bindingCpuReplication = bindingCpuReplication;
         this.name = name;
 
-        core = new VanillaEventLoop(this, name + "core-event-loop", pauser, 1, daemon, binding);
-        monitor = new MonitorEventLoop(this, Pauser.millis(100));
+        core = new VanillaEventLoop(this, name + "core-event-loop", pauser, 1, daemon, binding, bindingCpuCore);
+        monitor = new MonitorEventLoop(this, name, Pauser.millis(Integer.getInteger("monitor.interval", 10)));
         monitor.addHandler(new PauserMonitor(pauser, name + "core pauser", 30));
         blocking = new BlockingEventLoop(this, name + "blocking-event-loop");
     }
@@ -75,8 +91,12 @@ public class EventGroup implements EventLoop {
         this(daemon, Pauser.balanced(), binding);
     }
 
-    public EventGroup(boolean daemon, Pauser pauser, boolean binding) {
-        this(daemon, pauser, binding, "");
+    public EventGroup(boolean daemon, @NotNull Pauser pauser, boolean binding) {
+        this(daemon, pauser, binding, NO_CPU, NO_CPU, "");
+    }
+
+    public EventGroup(boolean daemon, @NotNull Pauser pauser, boolean binding, String name) {
+        this(daemon, pauser, binding, NO_CPU, NO_CPU, name);
     }
 
     static int hash(int n, int mod) {
@@ -90,20 +110,20 @@ public class EventGroup implements EventLoop {
     }
 
     synchronized VanillaEventLoop getReplication() {
-        if (_replication == null) {
+        if (replication == null) {
             Pauser pauser = Pauser.balancedUpToMillis(REPLICATION_EVENT_PAUSE_TIME);
-            _replication = new VanillaEventLoop(this, name + "replication-event-loop", pauser, REPLICATION_EVENT_PAUSE_TIME, true, binding);
-            monitor.addHandler(new LoopBlockMonitor(REPLICATION_MONITOR_INTERVAL_MS, _replication));
-            _replication.start();
+            replication = new VanillaEventLoop(this, name + "replication-event-loop", pauser, REPLICATION_EVENT_PAUSE_TIME, true, binding, bindingCpuReplication);
+            monitor.addHandler(new LoopBlockMonitor(REPLICATION_MONITOR_INTERVAL_MS, replication));
+            replication.start();
             monitor.addHandler(new PauserMonitor(pauser, name + "replication pauser", 60));
         }
-        return _replication;
+        return replication;
     }
 
     private synchronized VanillaEventLoop getConcThread(int n) {
         if (concThreads[n] == null) {
             Pauser pauser = concThreadPauserSupplier.get();
-            concThreads[n] = new VanillaEventLoop(this, name + "conc-event-loop-" + n, pauser, REPLICATION_EVENT_PAUSE_TIME, daemon, binding);
+            concThreads[n] = new VanillaEventLoop(this, name + "conc-event-loop-" + n, pauser, REPLICATION_EVENT_PAUSE_TIME, daemon, binding, NO_CPU);
             monitor.addHandler(new LoopBlockMonitor(REPLICATION_MONITOR_INTERVAL_MS, concThreads[n]));
             concThreads[n].start();
             monitor.addHandler(new PauserMonitor(pauser, name + "conc-event-loop-" + n + " pauser", 60));
@@ -116,12 +136,13 @@ public class EventGroup implements EventLoop {
         core.awaitTermination();
         blocking.awaitTermination();
         monitor.awaitTermination();
-        if (_replication != null)
-            _replication.awaitTermination();
+        if (replication != null)
+            replication.awaitTermination();
         for (VanillaEventLoop concThread : concThreads) {
             if (concThread != null)
                 concThread.awaitTermination();
         }
+
     }
 
     @Override
@@ -134,6 +155,7 @@ public class EventGroup implements EventLoop {
         addHandler(handler);
     }
 
+    @Override
     public void addHandler(@NotNull EventHandler handler) {
         HandlerPriority t1 = handler.priority();
         switch (t1) {
@@ -182,8 +204,8 @@ public class EventGroup implements EventLoop {
     @Override
     public void stop() {
         monitor.stop();
-        if (_replication != null)
-            _replication.stop();
+        if (replication != null)
+            replication.stop();
         for (VanillaEventLoop concThread : concThreads) {
             if (concThread != null)
                 concThread.stop();
@@ -205,19 +227,23 @@ public class EventGroup implements EventLoop {
     @Override
     public void close() {
         stop();
-        monitor.close();
-        blocking.close();
-        core.close();
-        if (_replication != null) _replication.close();
+        Closeable.closeQuietly(
+                monitor,
+                blocking,
+                core);
+
+        VanillaEventLoop replication = this.replication;
+        if (replication != null) Closeable.closeQuietly(replication);
         Closeable.closeQuietly(concThreads);
     }
 
     class LoopBlockMonitor implements EventHandler {
         private final long monitoryIntervalMs;
+        @NotNull
         private final VanillaEventLoop eventLoop;
         long lastInterval = 1;
 
-        public LoopBlockMonitor(long monitoryIntervalMs, final VanillaEventLoop eventLoop) {
+        public LoopBlockMonitor(long monitoryIntervalMs, @NotNull final VanillaEventLoop eventLoop) {
             this.monitoryIntervalMs = monitoryIntervalMs;
             assert eventLoop != null;
             this.eventLoop = eventLoop;

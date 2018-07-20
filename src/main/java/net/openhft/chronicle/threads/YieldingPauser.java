@@ -18,21 +18,17 @@
 
 package net.openhft.chronicle.threads;
 
-import org.jetbrains.annotations.NotNull;
-
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import net.openhft.chronicle.core.Jvm;
 
 /*
- * Created by Peter Lawrey on 10/03/2016.
+ * Created by peter.lawrey on 2/11/2017.
  */
-public class TimeoutPauser implements Pauser, TimingPauser {
+public class YieldingPauser implements Pauser {
     private final int minBusy;
     private int count = 0;
     private long timePaused = 0;
     private long countPaused = 0;
     private long yieldStart = 0;
-    private long timeOutStart = Long.MAX_VALUE;
 
     /**
      * first it will busy wait, then it will yield, then sleep for a small amount of time, then
@@ -41,7 +37,7 @@ public class TimeoutPauser implements Pauser, TimingPauser {
      * @param minBusy the min number of times it will go around doing nothing, after this is
      *                reached it will then start to yield
      */
-    public TimeoutPauser(int minBusy) {
+    public YieldingPauser(int minBusy) {
         this.minBusy = minBusy;
     }
 
@@ -49,31 +45,16 @@ public class TimeoutPauser implements Pauser, TimingPauser {
     public void reset() {
         checkYieldTime();
         count = 0;
-        timeOutStart = Long.MAX_VALUE;
     }
 
     @Override
     public void pause() {
         ++count;
-        if (count < minBusy)
+        if (count < minBusy) {
+            Jvm.safepoint();
             return;
-
+        }
         yield();
-        checkYieldTime();
-    }
-
-    @Override
-    public void pause(long timeout, @NotNull TimeUnit timeUnit) throws TimeoutException {
-        ++count;
-        if (count < minBusy)
-            return;
-        yield();
-
-        if (timeOutStart == Long.MAX_VALUE)
-            timeOutStart = System.nanoTime();
-        else if (timeOutStart + timeUnit.toNanos(timeout) < System.nanoTime())
-            throw new TimeoutException();
-        checkYieldTime();
     }
 
     private void checkYieldTime() {
